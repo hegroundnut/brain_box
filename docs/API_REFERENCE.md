@@ -24,6 +24,7 @@
   - [2.4 导航轨迹上报](#24-导航轨迹上报)
 - [三、统一响应格式](#三统一响应格式)
 - [四、数据结构定义](#四数据结构定义)
+- [五、MAVLink 多连接通道配置](#五mavlink-多连接通道配置)
 
 ---
 
@@ -777,7 +778,12 @@ Content-Type: application/json
     "relative_alt": 0.0,            // 相对高度 (米, MAVLink 提供)
     "heading": 0.0                  // 航向角 (度, MAVLink 提供)
   },
-  "metadata": {}                    // 扩展元数据 (autopilot, mav_type, system_status, ...)
+  "metadata": {                     // 扩展元数据
+    "autopilot": "...",             // 自驾仪类型
+    "mav_type": "...",              // MAVLink 设备类型
+    "system_status": "...",         // 系统状态
+    "channel": "..."               // 所属连接通道标签
+  }
 }
 ```
 
@@ -807,3 +813,49 @@ Content-Type: application/json
   "metadata": {}                   // 扩展元数据
 }
 ```
+
+---
+
+## 五、MAVLink 多连接通道配置
+
+系统支持同时在**多个端口/地址**上与无人机通信，每个通道独立运行心跳监听和消息收发。
+
+### 支持的连接类型
+
+| 类型 | connection_string 示例 | 说明 |
+|------|----------------------|------|
+| UDP 监听 | `udpin:0.0.0.0:14550` | 监听指定端口，等待无人机连接 |
+| UDP 输出 | `udpout:192.168.1.10:14550` | 主动连接到指定地址 |
+| TCP 客户端 | `tcp:192.168.1.50:5762` | 连接远端 TCP 服务器 |
+| TCP 服务器 | `tcpin:0.0.0.0:5760` | 监听 TCP 端口等待连接 |
+| 串口 | `/dev/ttyUSB0` | 通过串口（数传电台）通信 |
+
+### 配置示例
+
+```yaml
+mavlink:
+  # 多连接通道（推荐）
+  connections:
+    - connection_string: "udpin:0.0.0.0:14550"
+      label: "udp_group_1"
+    - connection_string: "udpin:0.0.0.0:14551"
+      label: "udp_group_2"
+    - connection_string: "tcp:192.168.1.50:5762"
+      label: "tcp_drone"
+    - connection_string: "/dev/ttyUSB0"
+      label: "radio_link"
+      baud_rate: 57600
+
+  # 单连接（向后兼容，若无 connections 则使用此项）
+  # connection_string: "udpin:0.0.0.0:14550"
+
+  system_id: 255
+  component_id: 0
+```
+
+### 行为说明
+
+- 每个通道**独立**运行心跳监听循环，发现的无人机自动汇入全局设备列表
+- 发送指令时，系统根据设备 `metadata.channel` 自动找到正确的通道发送
+- 某个通道连接失败不影响其他通道正常工作
+- `pymavlink` 未安装时，所有通道自动进入模拟模式

@@ -43,3 +43,36 @@ def test_missing_yaml() -> None:
     reset_settings()
     s = Settings.from_yaml("/nonexistent/path.yaml")
     assert s.edge.base_url == "http://192.168.1.100:8080"
+
+
+def test_multi_connection_config(tmp_path: Path) -> None:
+    reset_settings()
+    config = tmp_path / "multi.yaml"
+    config.write_text(
+        "mavlink:\n"
+        "  connections:\n"
+        "    - connection_string: 'udpin:0.0.0.0:14550'\n"
+        "      label: 'group_1'\n"
+        "    - connection_string: 'tcp:192.168.1.50:5762'\n"
+        "      label: 'tcp_drone'\n"
+        "      baud_rate: 115200\n"
+        "  system_id: 200\n"
+    )
+    s = Settings.from_yaml(config)
+    conns = s.mavlink.get_connections()
+    assert len(conns) == 2
+    assert conns[0].connection_string == "udpin:0.0.0.0:14550"
+    assert conns[0].label == "group_1"
+    assert conns[1].connection_string == "tcp:192.168.1.50:5762"
+    assert conns[1].label == "tcp_drone"
+    assert conns[1].baud_rate == 115200
+    assert s.mavlink.system_id == 200
+
+
+def test_single_connection_fallback() -> None:
+    reset_settings()
+    s = Settings()
+    conns = s.mavlink.get_connections()
+    assert len(conns) == 1
+    assert conns[0].connection_string == "udpin:0.0.0.0:14550"
+    assert conns[0].label == "default"

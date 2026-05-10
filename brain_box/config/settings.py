@@ -24,15 +24,35 @@ class EdgeServerConfig:
 
 
 @dataclass
-class MAVLinkConfig:
-    """MAVLink 通信配置."""
+class MAVLinkConnectionEntry:
+    """单个 MAVLink 连接配置."""
 
     connection_string: str = "udpin:0.0.0.0:14550"
+    label: str = ""
+    baud_rate: int = 57600
+
+
+@dataclass
+class MAVLinkConfig:
+    """MAVLink 通信配置（支持多连接）."""
+
+    connection_string: str = "udpin:0.0.0.0:14550"
+    connections: list[MAVLinkConnectionEntry] = field(default_factory=list)
     system_id: int = 255
     component_id: int = 0
     scan_interval: float = 3.0
     heartbeat_timeout: float = 10.0
     baud_rate: int = 57600
+
+    def get_connections(self) -> list[MAVLinkConnectionEntry]:
+        """返回所有连接配置; 若无显式 connections 则用 connection_string 回退."""
+        if self.connections:
+            return list(self.connections)
+        return [MAVLinkConnectionEntry(
+            connection_string=self.connection_string,
+            label="default",
+            baud_rate=self.baud_rate,
+        )]
 
 
 @dataclass
@@ -58,6 +78,16 @@ class LoggingConfig:
     format: str = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
 
+def _apply_section(data: dict[str, Any], key: str, target: Any) -> None:
+    """将 data[key] 中的字段赋值到 target 对象."""
+    section = data.get(key)
+    if not section:
+        return
+    for k, v in section.items():
+        if hasattr(target, k):
+            setattr(target, k, v)
+
+
 @dataclass
 class Settings:
     """全局配置."""
@@ -80,23 +110,28 @@ class Settings:
     @classmethod
     def _from_dict(cls, data: dict[str, Any]) -> Settings:
         settings = cls()
-        if "edge" in data:
-            for k, v in data["edge"].items():
-                if hasattr(settings.edge, k):
-                    setattr(settings.edge, k, v)
-        if "mavlink" in data:
-            for k, v in data["mavlink"].items():
-                if hasattr(settings.mavlink, k):
-                    setattr(settings.mavlink, k, v)
-        if "server" in data:
-            for k, v in data["server"].items():
-                if hasattr(settings.server, k):
-                    setattr(settings.server, k, v)
-        if "logging" in data:
-            for k, v in data["logging"].items():
-                if hasattr(settings.logging, k):
-                    setattr(settings.logging, k, v)
+        _apply_section(data, "edge", settings.edge)
+        cls._apply_mavlink_section(data, settings)
+        _apply_section(data, "server", settings.server)
+        _apply_section(data, "logging", settings.logging)
         return settings
+
+    @staticmethod
+    def _apply_mavlink_section(data: dict[str, Any], settings: Settings) -> None:
+        if "mavlink" not in data:
+            return
+        mav_data = data["mavlink"]
+        conn_list_raw = mav_data.pop("connections", None)
+        _apply_section({"mavlink": mav_data}, "mavlink", settings.mavlink)
+        if conn_list_raw and isinstance(conn_list_raw, list):
+            settings.mavlink.connections = [
+                MAVLinkConnectionEntry(
+                    connection_string=c.get("connection_string", "udpin:0.0.0.0:14550"),
+                    label=c.get("label", ""),
+                    baud_rate=c.get("baud_rate", settings.mavlink.baud_rate),
+                )
+                for c in conn_list_raw
+            ]
 
     def apply_env_overrides(self) -> None:
         """环境变量覆盖配置 (优先级最高)."""

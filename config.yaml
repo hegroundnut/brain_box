@@ -11,12 +11,27 @@ edge:
   timeout: 10.0              # HTTP 请求超时 (秒)
 
 mavlink:
-  connection_string: "udpin:0.0.0.0:14550"  # MAVLink 连接串
+  # 多连接通道配置（每台无人机/每组无人机可以有独立通道）
+  # 支持 UDP (udpin/udpout), TCP (tcp/tcpin), 串口 (/dev/ttyUSB0) 等
+  connections:
+    - connection_string: "udpin:0.0.0.0:14550"
+      label: "udp_group_1"       # 通道标签（可选）
+    # - connection_string: "udpin:0.0.0.0:14551"
+    #   label: "udp_group_2"
+    # - connection_string: "tcp:192.168.1.50:5762"
+    #   label: "tcp_drone"
+    # - connection_string: "/dev/ttyUSB0"
+    #   label: "radio_link"
+    #   baud_rate: 57600
+
+  # 若未配置 connections，则回退到单连接模式:
+  # connection_string: "udpin:0.0.0.0:14550"
+
   system_id: 255
   component_id: 0
   scan_interval: 3.0         # 无人机扫描间隔 (秒)
   heartbeat_timeout: 10.0    # 心跳超时 (秒)
-  baud_rate: 57600
+  baud_rate: 57600           # 默认波特率（连接级可覆盖）
 
 server:
   host: "0.0.0.0"
