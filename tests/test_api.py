@@ -18,6 +18,7 @@ from brain_box.edge.reporter import EdgeReporter
 from brain_box.navigation.registry import AlgorithmRegistry
 from brain_box.navigation.service import NavigationService
 from brain_box.navigation.simple_nav import SimpleNavigationAlgorithm
+from brain_box.storage.database import Database
 
 HTTP_OK = 200
 
@@ -53,20 +54,29 @@ class MockProtocol(DeviceProtocol):
 
 
 @pytest.fixture
-def app() -> FastAPI:
+def db(tmp_path: Any) -> Database:
+    """使用临时路径创建测试数据库."""
+    database = Database(db_path=tmp_path / "test.db")
+    database.open()
+    yield database
+    database.close()
+
+
+@pytest.fixture
+def app(db: Database) -> FastAPI:
     registry = ProtocolRegistry()
     registry.register(MockProtocol())
 
     algo_registry = AlgorithmRegistry()
     algo_registry.register(SimpleNavigationAlgorithm())
 
-    drone_manager = DroneManager(registry)
+    drone_manager = DroneManager(registry, database=db)
     edge_client = EdgeClient(EdgeServerConfig())
     edge_reporter = EdgeReporter(edge_client, drone_manager)
-    nav_service = NavigationService(algo_registry, drone_manager, registry)
+    nav_service = NavigationService(algo_registry, drone_manager, registry, database=db)
 
     test_app = FastAPI()
-    router = create_api_router(drone_manager, nav_service, edge_reporter)
+    router = create_api_router(drone_manager, nav_service, edge_reporter, database=db)
     test_app.include_router(router)
     return test_app
 
@@ -129,6 +139,49 @@ async def test_navigation_instruction(client: AsyncClient) -> None:
     data = resp.json()
     assert data["success"] is True
     assert "waypoints" in data["data"]
+
+
+@pytest.mark.asyncio
+async def test_trajectory_persisted_in_db(client: AsyncClient, db: Database) -> None:
+    """生成轨迹后应在数据库中存储为 pending 状态."""
+    await client.post("/api/v1/drones/scan")
+    resp = await client.post(
+        "/api/v1/navigation/instruction",
+        json={
+            "instruction_id": "nav_db_001",
+            "device_id": "test_drone_1",
+            "target_position": {"latitude": 39.91, "longitude": 116.41, "altitude": 100},
+        },
+    )
+    assert resp.status_code == HTTP_OK
+    trajectory_id = resp.json()["data"]["trajectory_id"]
+
+    record = db.get_trajectory(trajectory_id)
+    assert record is not None
+    assert record["status"] == "pending"
+    assert record["device_id"] == "test_drone_1"
+
+
+@pytest.mark.asyncio
+async def test_trajectory_history_api(client: AsyncClient) -> None:
+    """历史轨迹查询接口应返回已存储的轨迹."""
+    await client.post("/api/v1/drones/scan")
+    await client.post(
+        "/api/v1/navigation/instruction",
+        json={
+            "instruction_id": "nav_hist_001",
+            "device_id": "test_drone_1",
+            "target_position": {"latitude": 39.92, "longitude": 116.42, "altitude": 120},
+        },
+    )
+    resp = await client.post(
+        "/api/v1/navigation/trajectories/history",
+        json={"device_id": "test_drone_1"},
+    )
+    assert resp.status_code == HTTP_OK
+    data = resp.json()
+    assert data["success"] is True
+    assert len(data["data"]) >= 1
 
 
 @pytest.mark.asyncio

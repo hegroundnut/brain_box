@@ -8,6 +8,7 @@ import pytest
 from brain_box.communication.registry import ProtocolRegistry
 from brain_box.core.device import DeviceInfo, DeviceProtocol, DeviceStatus
 from brain_box.drone.manager import DroneManager
+from brain_box.storage.database import Database
 
 
 class MockProtocol(DeviceProtocol):
@@ -56,11 +57,19 @@ class MockProtocol(DeviceProtocol):
         return None
 
 
+@pytest.fixture
+def db(tmp_path: Any) -> Database:
+    database = Database(db_path=tmp_path / "test.db")
+    database.open()
+    yield database
+    database.close()
+
+
 @pytest.mark.asyncio
-async def test_scan_devices() -> None:
+async def test_scan_devices(db: Database) -> None:
     registry = ProtocolRegistry()
     registry.register(MockProtocol())
-    manager = DroneManager(registry)
+    manager = DroneManager(registry, database=db)
 
     devices = await manager.scan_now()
     assert len(devices) == 2
@@ -69,10 +78,10 @@ async def test_scan_devices() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_online_devices() -> None:
+async def test_get_online_devices(db: Database) -> None:
     registry = ProtocolRegistry()
     registry.register(MockProtocol())
-    manager = DroneManager(registry)
+    manager = DroneManager(registry, database=db)
     await manager.scan_now()
 
     online = manager.get_online_devices()
@@ -80,10 +89,10 @@ async def test_get_online_devices() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_devices_by_type() -> None:
+async def test_get_devices_by_type(db: Database) -> None:
     registry = ProtocolRegistry()
     registry.register(MockProtocol())
-    manager = DroneManager(registry)
+    manager = DroneManager(registry, database=db)
     await manager.scan_now()
 
     quads = manager.get_devices_by_type("quadcopter")
@@ -92,10 +101,10 @@ async def test_get_devices_by_type() -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_command() -> None:
+async def test_send_command(db: Database) -> None:
     registry = ProtocolRegistry()
     registry.register(MockProtocol())
-    manager = DroneManager(registry)
+    manager = DroneManager(registry, database=db)
     await manager.scan_now()
 
     result = await manager.send_command("mock_drone_1", {"type": "arm"})
@@ -103,12 +112,36 @@ async def test_send_command() -> None:
 
 
 @pytest.mark.asyncio
-async def test_summary() -> None:
+async def test_summary(db: Database) -> None:
     registry = ProtocolRegistry()
     registry.register(MockProtocol())
-    manager = DroneManager(registry)
+    manager = DroneManager(registry, database=db)
     await manager.scan_now()
 
     summary = manager.get_all_devices_summary()
     assert summary["total"] == 2
     assert summary["online"] == 2
+
+
+@pytest.mark.asyncio
+async def test_stale_device_evicted_to_db(db: Database) -> None:
+    """超时离线设备应被驱逐到数据库并从内存移除."""
+    registry = ProtocolRegistry()
+    proto = MockProtocol()
+    # 将 mock_drone_2 的心跳时间设置为很久以前，模拟超时
+    proto._devices[1].last_heartbeat = time.time() - 200
+    registry.register(proto)
+
+    # 驱逐超时设置为 60 秒
+    manager = DroneManager(registry, database=db, evict_timeout=60.0)
+    await manager.scan_now()
+
+    # mock_drone_2 应已被驱逐出内存
+    assert manager.get_device("mock_drone_2") is None
+    # mock_drone_1 应仍在内存中
+    assert manager.get_device("mock_drone_1") is not None
+
+    # 数据库中应有 mock_drone_2 的历史记录
+    history = db.list_device_history(device_id="mock_drone_2")
+    assert len(history) == 1
+    assert history[0]["device_id"] == "mock_drone_2"

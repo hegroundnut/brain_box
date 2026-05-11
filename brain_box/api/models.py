@@ -41,6 +41,21 @@ class TrajectoryExecuteRequest(BaseModel):
     trajectory_id: str = Field(..., description="轨迹 ID")
 
 
+class TrajectoryHistoryRequest(BaseModel):
+    """历史轨迹查询请求."""
+
+    device_id: str | None = Field(None, description="按设备 ID 过滤")
+    status: str | None = Field(None, description="按状态过滤: pending/executed/failed")
+    limit: int = Field(100, ge=1, le=1000, description="最多返回条数")
+
+
+class DeviceHistoryRequest(BaseModel):
+    """离线设备历史查询请求."""
+
+    device_id: str | None = Field(None, description="按设备 ID 过滤")
+    limit: int = Field(200, ge=1, le=1000, description="最多返回条数")
+
+
 class ApiResponse(BaseModel):
     """统一 API 响应."""
 
