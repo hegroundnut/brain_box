@@ -17,7 +17,11 @@ _MAX_SIMULATED_DRONES = 3
 
 
 class _MAVLinkChannel:
-    """单个 MAVLink 连接通道（内部使用）."""
+    """单个 MAVLink 连接通道（内部使用）.
+
+    维护一个 system_id → 远端地址 的映射表，
+    发送指令时自动路由到正确的无人机地址（解决 udpin 多无人机问题）。
+    """
 
     def __init__(
         self,
@@ -32,13 +36,15 @@ class _MAVLinkChannel:
         self.simulated = False
         self._running = False
         self._task: asyncio.Task[None] | None = None
+        self._addr_map: dict[int, tuple[str, int]] = {}
+        self._send_lock = asyncio.Lock()
 
     @property
     def label(self) -> str:
         return self.entry.label or self.entry.connection_string
 
     async def open(self, devices: dict[str, DeviceInfo]) -> None:
-        """打开连接并启动心跳循环."""
+        """打开连接并启动消息接收循环."""
         try:
             from pymavlink import mavutil
 
@@ -50,7 +56,7 @@ class _MAVLinkChannel:
             )
             self.simulated = False
             self._running = True
-            self._task = asyncio.create_task(self._heartbeat_loop(devices))
+            self._task = asyncio.create_task(self._recv_loop(devices))
             logger.info(
                 "MAVLink 通道已连接: %s (%s)",
                 self.label,
@@ -63,7 +69,7 @@ class _MAVLinkChannel:
             self.simulated = True
             self._running = True
             self._task = asyncio.create_task(
-                self._simulated_heartbeat_loop(devices)
+                self._simulated_loop(devices)
             )
         except Exception:
             logger.exception("MAVLink 通道 '%s' 连接失败", self.label)
@@ -80,28 +86,63 @@ class _MAVLinkChannel:
             self.connection = None
         logger.info("MAVLink 通道已断开: %s", self.label)
 
-    # ── 心跳循环 ──────────────────────────────────────────────
+    async def send_to_device(self, target_system: int, send_fn: Any) -> None:
+        """向指定 system_id 的设备发送消息（自动路由到正确地址）."""
+        async with self._send_lock:
+            addr = self._addr_map.get(target_system)
+            if addr and hasattr(self.connection, "last_address"):
+                saved = getattr(self.connection, "last_address", None)
+                self.connection.last_address = addr
+                try:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, send_fn
+                    )
+                finally:
+                    self.connection.last_address = saved
+            else:
+                await asyncio.get_event_loop().run_in_executor(None, send_fn)
 
-    async def _heartbeat_loop(self, devices: dict[str, DeviceInfo]) -> None:
+    # ── 统一消息接收循环 ──────────────────────────────────────
+
+    async def _recv_loop(self, devices: dict[str, DeviceInfo]) -> None:
+        """统一消息接收 — 不按类型过滤，收到什么就分发处理."""
         while self._running:
             try:
                 msg = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: self.connection.recv_match(
-                        type="HEARTBEAT", blocking=True, timeout=1
+                        blocking=True, timeout=1
                     ),
                 )
-                if msg:
+                if msg is None:
+                    continue
+
+                msg_type = msg.get_type()
+                if msg_type == "BAD_DATA":
+                    continue
+
+                sys_id = msg.get_srcSystem()
+                if hasattr(self.connection, "last_address") and self.connection.last_address:
+                    self._addr_map[sys_id] = self.connection.last_address
+
+                if msg_type == "HEARTBEAT":
                     _process_heartbeat(msg, devices, self.label)
-
-                await self._poll_messages(devices)
+                elif msg_type == "GLOBAL_POSITION_INT":
+                    _process_position(msg, devices)
+                elif msg_type == "COMMAND_ACK":
+                    logger.debug(
+                        "收到指令确认: command=%s, result=%s",
+                        msg.command,
+                        msg.result,
+                    )
             except Exception:
-                logger.exception("MAVLink 心跳循环异常 (通道 %s)", self.label)
-            await asyncio.sleep(0.1)
+                logger.exception("MAVLink 消息接收异常 (通道 %s)", self.label)
+            await asyncio.sleep(0.01)
 
-    async def _simulated_heartbeat_loop(
+    async def _simulated_loop(
         self, devices: dict[str, DeviceInfo]
     ) -> None:
+        """模拟心跳循环（pymavlink 不可用时）."""
         sim_id = 0
         prefix = self.label.replace(" ", "_")
         while self._running:
@@ -113,12 +154,7 @@ class _MAVLinkChannel:
                     protocol="mavlink",
                     status=DeviceStatus.ONLINE,
                     ip_address="127.0.0.1",
-                    port=int(
-                        self.entry.connection_string.rsplit(":", 1)[-1]
-                        if ":" in self.entry.connection_string
-                        else 14550
-                    )
-                    + sim_id,
+                    port=_parse_port(self.entry.connection_string) + sim_id,
                     last_heartbeat=time.time(),
                     position={
                         "latitude": 39.9042 + sim_id * 0.001,
@@ -142,30 +178,20 @@ class _MAVLinkChannel:
 
             await asyncio.sleep(3.0)
 
-    async def _poll_messages(self, devices: dict[str, DeviceInfo]) -> None:
-        if not self.connection:
-            return
-        msg = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: self.connection.recv_match(
-                type="GLOBAL_POSITION_INT", blocking=False
-            ),
-        )
-        if msg:
-            sys_id = msg.get_srcSystem()
-            device_id = f"drone_{sys_id}"
-            device = devices.get(device_id)
-            if device:
-                device.position = {
-                    "latitude": msg.lat / 1e7,
-                    "longitude": msg.lon / 1e7,
-                    "altitude": msg.alt / 1000.0,
-                    "relative_alt": msg.relative_alt / 1000.0,
-                    "heading": msg.hdg / 100.0,
-                }
-
 
 # ── 公共辅助函数 ──────────────────────────────────────────────
+
+_DEFAULT_PORT = 14550
+
+
+def _parse_port(connection_string: str) -> int:
+    """从连接字符串中提取端口号."""
+    if ":" in connection_string:
+        try:
+            return int(connection_string.rsplit(":", 1)[-1])
+        except ValueError:
+            return _DEFAULT_PORT
+    return _DEFAULT_PORT
 
 
 def _process_heartbeat(
@@ -200,6 +226,21 @@ def _process_heartbeat(
     device.metadata["system_status"] = msg.system_status
 
 
+def _process_position(msg: Any, devices: dict[str, DeviceInfo]) -> None:
+    """处理位置消息."""
+    sys_id = msg.get_srcSystem()
+    device_id = f"drone_{sys_id}"
+    device = devices.get(device_id)
+    if device:
+        device.position = {
+            "latitude": msg.lat / 1e7,
+            "longitude": msg.lon / 1e7,
+            "altitude": msg.alt / 1000.0,
+            "relative_alt": msg.relative_alt / 1000.0,
+            "heading": msg.hdg / 100.0,
+        }
+
+
 def _get_mav_type_name(mav_type: int) -> str:
     type_map = {
         0: "generic",
@@ -222,6 +263,11 @@ class MAVLinkProtocol(DeviceProtocol):
 
     支持同时在多个端口/地址上监听和发送 MAVLink 消息，
     每个通道可以是 UDP、TCP 或串口连接。
+
+    UDP 通信架构:
+    - 类脑盒子: udpin:0.0.0.0:14550  → 监听端口
+    - 无人机:   udpout:brain_box_ip:14550 → 主动连接
+    - udpin 会记住每台无人机的地址，发送指令时自动路由到正确目标
     """
 
     def __init__(self, config: MAVLinkConfig) -> None:
@@ -335,6 +381,10 @@ class MAVLinkProtocol(DeviceProtocol):
             else:
                 device.status = DeviceStatus.OFFLINE
 
+    @staticmethod
+    def _get_target_system(device: DeviceInfo) -> int:
+        return int(device.device_id.split("_")[1])
+
     async def _send_mavlink_command(
         self,
         channel: _MAVLinkChannel,
@@ -343,79 +393,55 @@ class MAVLinkProtocol(DeviceProtocol):
     ) -> dict[str, Any]:
         cmd_type = command.get("type", "")
         conn = channel.connection
-        if cmd_type == "arm":
-            await self._arm_disarm(conn, device, arm=True)
-        elif cmd_type == "disarm":
-            await self._arm_disarm(conn, device, arm=False)
-        elif cmd_type == "takeoff":
-            altitude = command.get("altitude", 10.0)
-            await self._takeoff(conn, device, altitude)
-        elif cmd_type == "land":
-            await self._land(conn, device)
-        elif cmd_type == "goto":
-            await self._goto(conn, device, command)
-        else:
+        target = self._get_target_system(device)
+
+        def do_send() -> None:
+            from pymavlink import mavutil
+
+            if cmd_type == "arm":
+                conn.mav.command_long_send(
+                    target, 0,
+                    mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                    0, 1, 0, 0, 0, 0, 0, 0,
+                )
+            elif cmd_type == "disarm":
+                conn.mav.command_long_send(
+                    target, 0,
+                    mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                    0, 0, 0, 0, 0, 0, 0, 0,
+                )
+            elif cmd_type == "takeoff":
+                altitude = command.get("altitude", 10.0)
+                conn.mav.command_long_send(
+                    target, 0,
+                    mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+                    0, 0, 0, 0, 0, 0, 0, altitude,
+                )
+            elif cmd_type == "land":
+                conn.mav.command_long_send(
+                    target, 0,
+                    mavutil.mavlink.MAV_CMD_NAV_LAND,
+                    0, 0, 0, 0, 0, 0, 0, 0,
+                )
+            elif cmd_type == "goto":
+                lat = command.get("latitude", 0)
+                lon = command.get("longitude", 0)
+                alt = command.get("altitude", 10)
+                conn.mav.command_long_send(
+                    target, 0,
+                    mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
+                    0, 0, 0, 0, 0,
+                    int(lat * 1e7), int(lon * 1e7), alt,
+                )
+
+        if cmd_type not in ("arm", "disarm", "takeoff", "land", "goto"):
             return {"success": False, "error": f"未知指令类型: {cmd_type}"}
+
+        await channel.send_to_device(target, do_send)
         return {"success": True, "command": cmd_type, "device_id": device.device_id}
 
-    @staticmethod
-    async def _arm_disarm(conn: Any, device: DeviceInfo, *, arm: bool) -> None:
-        from pymavlink import mavutil
-
-        conn.mav.command_long_send(
-            int(device.device_id.split("_")[1]),
-            0,
-            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-            0,
-            1 if arm else 0,
-            0, 0, 0, 0, 0, 0,
-        )
-
-    @staticmethod
-    async def _takeoff(conn: Any, device: DeviceInfo, altitude: float) -> None:
-        from pymavlink import mavutil
-
-        conn.mav.command_long_send(
-            int(device.device_id.split("_")[1]),
-            0,
-            mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
-            0,
-            0, 0, 0, 0, 0, 0,
-            altitude,
-        )
-
-    @staticmethod
-    async def _land(conn: Any, device: DeviceInfo) -> None:
-        from pymavlink import mavutil
-
-        conn.mav.command_long_send(
-            int(device.device_id.split("_")[1]),
-            0,
-            mavutil.mavlink.MAV_CMD_NAV_LAND,
-            0,
-            0, 0, 0, 0, 0, 0, 0,
-        )
-
-    @staticmethod
-    async def _goto(conn: Any, device: DeviceInfo, command: dict[str, Any]) -> None:
-        from pymavlink import mavutil
-
-        lat = command.get("latitude", 0)
-        lon = command.get("longitude", 0)
-        alt = command.get("altitude", 10)
-        conn.mav.command_long_send(
-            int(device.device_id.split("_")[1]),
-            0,
-            mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
-            0,
-            0, 0, 0, 0,
-            int(lat * 1e7),
-            int(lon * 1e7),
-            alt,
-        )
-
-    @staticmethod
     async def _upload_mission(
+        self,
         channel: _MAVLinkChannel,
         device: DeviceInfo,
         waypoints: list[dict[str, Any]],
@@ -424,24 +450,23 @@ class MAVLinkProtocol(DeviceProtocol):
         if not conn:
             return {"success": False, "error": "MAVLink 未连接"}
 
-        from pymavlink import mavutil
+        target = self._get_target_system(device)
 
-        target_system = int(device.device_id.split("_")[1])
+        def do_upload() -> None:
+            from pymavlink import mavutil
 
-        conn.mav.mission_count_send(target_system, 0, len(waypoints))
+            conn.mav.mission_count_send(target, 0, len(waypoints))
+            for i, wp in enumerate(waypoints):
+                conn.mav.mission_item_int_send(
+                    target, 0, i,
+                    mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
+                    mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
+                    0, 1,
+                    wp.get("hold_time", 0), 0, 0, 0,
+                    int(wp.get("latitude", 0) * 1e7),
+                    int(wp.get("longitude", 0) * 1e7),
+                    wp.get("altitude", 10),
+                )
 
-        for i, wp in enumerate(waypoints):
-            conn.mav.mission_item_int_send(
-                target_system, 0,
-                i,
-                mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
-                mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
-                0, 1,
-                wp.get("hold_time", 0),
-                0, 0, 0,
-                int(wp.get("latitude", 0) * 1e7),
-                int(wp.get("longitude", 0) * 1e7),
-                wp.get("altitude", 10),
-            )
-
+        await channel.send_to_device(target, do_upload)
         return {"success": True, "waypoint_count": len(waypoints)}
