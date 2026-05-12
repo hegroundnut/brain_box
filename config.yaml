@@ -33,10 +33,7 @@ mavlink:
   heartbeat_timeout: 10.0    # 心跳超时 (秒)
   baud_rate: 57600           # 默认波特率（连接级可覆盖）
 
-server:
-  host: "0.0.0.0"
-  port: 9000
-  debug: false
+# 注意: server 配置段已移除，HTTP 服务端口由 main.py 独立管理
 
 logging:
   level: "INFO"              # DEBUG / INFO / WARNING / ERROR
