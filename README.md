@@ -56,6 +56,7 @@ pip install -e ".[mavlink]"
 编辑 `config.yaml` 或通过环境变量覆盖:
 
 ```bash
+export BRAIN_BOX_ID="my_box_001"
 export BRAIN_BOX_EDGE_URL="http://10.0.0.1:8080"
 export BRAIN_BOX_LOG_LEVEL=DEBUG
 ```
@@ -146,6 +147,7 @@ curl -X POST http://localhost:9000/api/brainBox/CbrainBox/get_config \
     "code": 0,
     "msg": "success",
     "data": {
+        "box_id": "brain_box_001",
         "edge": {
             "base_url": "http://192.168.1.100:8080",
             "heartbeat_path": "/api/v1/brain-box/heartbeat",
@@ -188,6 +190,14 @@ curl -X POST http://localhost:9000/api/brainBox/CbrainBox/get_config \
 curl -X POST http://localhost:9000/api/brainBox/CbrainBox/update_config \
   -H "Content-Type: application/json" \
   -d '{"edge": {"base_url": "http://10.0.0.1:8080", "heartbeat_interval": 10.0}}'
+```
+
+**更新 box_id:**
+
+```bash
+curl -X POST http://localhost:9000/api/brainBox/CbrainBox/update_config \
+  -H "Content-Type: application/json" \
+  -d '{"box_id": "my_new_box_id"}'
 ```
 
 ## 扩展

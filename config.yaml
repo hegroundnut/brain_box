@@ -1,6 +1,8 @@
 # BrainBox 类脑盒子服务器配置
 # 所有配置项均可通过环境变量覆盖
 
+box_id: "brain_box_001"           # 盒子唯一标识 (环境变量: BRAIN_BOX_ID)
+
 edge:
   base_url: "http://192.168.1.100:8080"
   heartbeat_path: "/api/v1/brain-box/heartbeat"
