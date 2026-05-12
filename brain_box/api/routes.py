@@ -10,14 +10,17 @@ from fastapi import APIRouter
 from brain_box.api.models import (
     ApiResponse,
     CommandRequest,
+    DeviceHistoryRequest,
     DroneQueryRequest,
     NavigationInstructionRequest,
     TrajectoryExecuteRequest,
+    TrajectoryHistoryRequest,
 )
 from brain_box.core.algorithm import NavigationInstruction
 from brain_box.drone.manager import DroneManager
 from brain_box.edge.reporter import EdgeReporter
 from brain_box.navigation.service import NavigationService
+from brain_box.storage.database import Database
 
 logger = logging.getLogger("brain_box.api")
 
@@ -25,6 +28,7 @@ logger = logging.getLogger("brain_box.api")
 def _register_drone_routes(
     router: APIRouter,
     drone_manager: DroneManager,
+    database: Database,
 ) -> None:
     """注册无人机相关路由."""
 
@@ -73,11 +77,21 @@ def _register_drone_routes(
             data=result,
         )
 
+    @router.post("/drones/history", response_model=ApiResponse)
+    async def device_history(req: DeviceHistoryRequest) -> ApiResponse:
+        """查询已从内存驱逐的离线设备历史记录."""
+        records = database.list_device_history(
+            device_id=req.device_id,
+            limit=req.limit,
+        )
+        return ApiResponse(data=records)
+
 
 def _register_navigation_routes(
     router: APIRouter,
     navigation_service: NavigationService,
     edge_reporter: EdgeReporter,
+    database: Database,
 ) -> None:
     """注册导航相关路由."""
 
@@ -119,9 +133,19 @@ def _register_navigation_routes(
 
     @router.post("/navigation/trajectories", response_model=ApiResponse)
     async def list_trajectories() -> ApiResponse:
-        """列出所有活动导航轨迹."""
+        """列出内存中所有待执行（pending）导航轨迹."""
         trajectories = navigation_service.get_active_trajectories()
         return ApiResponse(data=trajectories)
+
+    @router.post("/navigation/trajectories/history", response_model=ApiResponse)
+    async def trajectory_history(req: TrajectoryHistoryRequest) -> ApiResponse:
+        """查询数据库中的历史轨迹（含已执行和失败的轨迹）."""
+        records = database.list_trajectories(
+            device_id=req.device_id,
+            status=req.status,
+            limit=req.limit,
+        )
+        return ApiResponse(data=records)
 
     @router.post("/navigation/algorithms", response_model=ApiResponse)
     async def list_algorithms() -> ApiResponse:
@@ -160,10 +184,11 @@ def create_api_router(
     drone_manager: DroneManager,
     navigation_service: NavigationService,
     edge_reporter: EdgeReporter,
+    database: Database,
 ) -> APIRouter:
     """创建 API 路由，注入依赖."""
     router = APIRouter(prefix="/api/v1")
-    _register_drone_routes(router, drone_manager)
-    _register_navigation_routes(router, navigation_service, edge_reporter)
+    _register_drone_routes(router, drone_manager, database)
+    _register_navigation_routes(router, navigation_service, edge_reporter, database)
     _register_system_routes(router, drone_manager, navigation_service)
     return router

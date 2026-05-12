@@ -21,6 +21,7 @@ from brain_box.logging_config import setup_logging
 from brain_box.navigation.registry import AlgorithmRegistry
 from brain_box.navigation.service import NavigationService
 from brain_box.navigation.simple_nav import SimpleNavigationAlgorithm
+from brain_box.storage.database import Database
 
 logger: logging.Logger
 
@@ -34,6 +35,10 @@ def build_app(config_path: str | None = None) -> FastAPI:
     logger.info("类脑盒子服务器启动中...")
     logger.info("边缘服务: %s", settings.edge.base_url)
     logger.info("MAVLink: %s", settings.mavlink.connection_string)
+    logger.info("数据库路径: %s", settings.storage.db_path)
+
+    # ── 本地数据库 ──
+    database = Database(db_path=settings.storage.db_path)
 
     # ── 通信协议注册 ──
     protocol_registry = ProtocolRegistry()
@@ -47,7 +52,9 @@ def build_app(config_path: str | None = None) -> FastAPI:
     # ── 无人机管理器 ──
     drone_manager = DroneManager(
         protocol_registry=protocol_registry,
+        database=database,
         scan_interval=settings.mavlink.scan_interval,
+        evict_timeout=settings.storage.device_evict_timeout,
     )
 
     # ── 边缘服务客户端 & 上报器 ──
@@ -64,11 +71,13 @@ def build_app(config_path: str | None = None) -> FastAPI:
         algorithm_registry=algorithm_registry,
         drone_manager=drone_manager,
         protocol_registry=protocol_registry,
+        database=database,
     )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """应用生命周期管理."""
+        database.open()
         await protocol_registry.connect_all()
         await drone_manager.start()
         await edge_client.start()
@@ -82,6 +91,7 @@ def build_app(config_path: str | None = None) -> FastAPI:
             await edge_client.stop()
             await drone_manager.stop()
             await protocol_registry.disconnect_all()
+            database.close()
             logger.info("所有服务已停止")
 
     app = FastAPI(
@@ -95,6 +105,7 @@ def build_app(config_path: str | None = None) -> FastAPI:
         drone_manager=drone_manager,
         navigation_service=navigation_service,
         edge_reporter=edge_reporter,
+        database=database,
     )
     app.include_router(api_router)
 

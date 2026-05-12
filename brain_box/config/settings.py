@@ -89,6 +89,15 @@ def _apply_section(data: dict[str, Any], key: str, target: Any) -> None:
 
 
 @dataclass
+class StorageConfig:
+    """本地存储配置."""
+
+    db_path: str = "data/brain_box.db"
+    # 设备在内存中的最大保留时长（秒），超时后写入历史表并从内存移除
+    device_evict_timeout: float = 60.0
+
+
+@dataclass
 class Settings:
     """全局配置."""
 
@@ -96,6 +105,7 @@ class Settings:
     mavlink: MAVLinkConfig = field(default_factory=MAVLinkConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> Settings:
@@ -114,6 +124,7 @@ class Settings:
         cls._apply_mavlink_section(data, settings)
         _apply_section(data, "server", settings.server)
         _apply_section(data, "logging", settings.logging)
+        _apply_section(data, "storage", settings.storage)
         return settings
 
     @staticmethod
@@ -147,6 +158,8 @@ class Settings:
             "BRAIN_BOX_SERVER_PORT": ("server", "port"),
             "BRAIN_BOX_LOG_LEVEL": ("logging", "level"),
             "BRAIN_BOX_LOG_DIR": ("logging", "log_dir"),
+            "BRAIN_BOX_DB_PATH": ("storage", "db_path"),
+            "BRAIN_BOX_DEVICE_EVICT_TIMEOUT": ("storage", "device_evict_timeout"),
         }
         for env_key, (section, attr) in env_map.items():
             val = os.environ.get(env_key)
