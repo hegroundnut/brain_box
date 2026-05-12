@@ -1,8 +1,9 @@
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
 from brainBox import CbrainBox
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-
-app = FastAPI(title="BrainBox Mock Platform")
 
 # --- 模拟平台初始化
 mock_node_cfg = {
@@ -28,6 +29,17 @@ cbrainbox_instance = CbrainBox(
     proc_modules_obj=None,
     progress_callback=mock_progress_callback,
 )
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
+    """启动/停止类脑盒子异步服务（心跳、上报等）."""
+    await cbrainbox_instance._manager.start()  # noqa: SLF001
+    yield
+    await cbrainbox_instance._manager.stop()  # noqa: SLF001
+
+
+app = FastAPI(title="BrainBox Mock Platform", lifespan=lifespan)
 
 
 @app.post("/api/brainBox/CbrainBox/{subfunc}")

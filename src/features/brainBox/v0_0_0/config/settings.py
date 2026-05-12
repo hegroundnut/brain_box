@@ -91,6 +91,7 @@ def _apply_section(data: dict[str, Any], key: str, target: Any) -> None:
 class Settings:
     """全局配置（不含 server 段，server 由 main.py 独立管理）."""
 
+    box_id: str = "brain_box_001"
     edge: EdgeServerConfig = field(default_factory=EdgeServerConfig)
     mavlink: MAVLinkConfig = field(default_factory=MAVLinkConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -109,6 +110,8 @@ class Settings:
     @classmethod
     def _from_dict(cls, data: dict[str, Any]) -> Settings:
         settings = cls()
+        if "box_id" in data:
+            settings.box_id = data["box_id"]
         _apply_section(data, "edge", settings.edge)
         cls._apply_mavlink_section(data, settings)
         _apply_section(data, "logging", settings.logging)
@@ -134,6 +137,9 @@ class Settings:
 
     def apply_env_overrides(self) -> None:
         """环境变量覆盖配置 (优先级最高)."""
+        box_id_env = os.environ.get("BRAIN_BOX_ID")
+        if box_id_env:
+            self.box_id = box_id_env
         env_map = {
             "BRAIN_BOX_EDGE_URL": ("edge", "base_url"),
             "BRAIN_BOX_EDGE_HEARTBEAT_PATH": ("edge", "heartbeat_path"),
@@ -165,6 +171,7 @@ class Settings:
     def to_dict(self) -> dict[str, Any]:
         """将配置导出为字典."""
         result: dict[str, Any] = {}
+        result["box_id"] = self.box_id
         result["edge"] = asdict(self.edge)
         mav = asdict(self.mavlink)
         mav["connections"] = [asdict(c) for c in self.mavlink.connections]
@@ -175,6 +182,8 @@ class Settings:
 
     def update_from_dict(self, data: dict[str, Any]) -> None:
         """从字典更新配置（支持部分更新）."""
+        if "box_id" in data:
+            self.box_id = data["box_id"]
         if "edge" in data:
             _apply_section(data, "edge", self.edge)
         if "mavlink" in data:

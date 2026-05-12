@@ -47,6 +47,7 @@ class BrainBoxManager:
             drone_manager=self._drone_manager,
             heartbeat_interval=self._settings.edge.heartbeat_interval,
             report_interval=self._settings.edge.report_interval,
+            box_id=self._settings.box_id,
         )
 
         self._navigation_service = NavigationService(
