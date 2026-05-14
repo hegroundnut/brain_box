@@ -8,6 +8,7 @@ from typing import Any
 
 from config.settings import get_settings
 from models.algorithm import NavigationInstruction
+from storage.database import Database
 
 from core.drone_manager import DroneManager
 from core.edge_reporter import EdgeClient, EdgeReporter
@@ -28,6 +29,10 @@ class BrainBoxManager:
     def __init__(self) -> None:
         self._settings = get_settings()
 
+        # 数据库
+        self._database = Database(db_path=self._settings.storage.db_path)
+        self._database.open()
+
         self._protocol_registry = ProtocolRegistry()
         self._mavlink = MAVLinkProtocol(self._settings.mavlink)
         self._protocol_registry.register(self._mavlink)
@@ -37,6 +42,7 @@ class BrainBoxManager:
 
         self._drone_manager = DroneManager(
             protocol_registry=self._protocol_registry,
+            database=self._database,
             scan_interval=self._settings.mavlink.scan_interval,
             evict_timeout=self._settings.storage.device_evict_timeout,
         )
@@ -54,6 +60,7 @@ class BrainBoxManager:
             algorithm_registry=self._algorithm_registry,
             drone_manager=self._drone_manager,
             protocol_registry=self._protocol_registry,
+            database=self._database,
         )
 
         self._started = False
@@ -73,6 +80,7 @@ class BrainBoxManager:
         await self._edge_client.stop()
         await self._drone_manager.stop()
         await self._protocol_registry.disconnect_all()
+        self._database.close()
         self._started = False
         logger.info("BrainBoxManager 所有服务已停止")
 
